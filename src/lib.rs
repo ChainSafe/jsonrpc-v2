@@ -305,11 +305,11 @@ enum InnerParams {
 #[serde(default)]
 pub struct RequestObject {
     jsonrpc: V2,
-    method: Box<str>,
+    pub method: Box<str>,
     params: Option<InnerParams>,
     #[serde(deserialize_with = "RequestObject::deserialize_id")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<Option<Id>>,
+    pub id: Option<Option<Id>>,
 }
 
 /// Request/Notification object
@@ -659,7 +659,7 @@ pub struct BoxedHandler(
     >,
 );
 
-pub struct MapRouter(HashMap<String, BoxedHandler>);
+pub struct MapRouter(HashMap<String, (BoxedHandler,bool)>);
 
 impl Default for MapRouter {
     fn default() -> Self {
@@ -668,16 +668,16 @@ impl Default for MapRouter {
 }
 
 pub trait Router: Default {
-    fn get(&self, name: &str) -> Option<&BoxedHandler>;
-    fn insert(&mut self, name: String, handler: BoxedHandler) -> Option<BoxedHandler>;
+    fn get(&self, name: &str) -> Option<&(BoxedHandler,bool)>;
+    fn insert(&mut self, name: String, handler: BoxedHandler,streaming:bool) -> Option<(BoxedHandler,bool)>;
 }
 
 impl Router for MapRouter {
-    fn get(&self, name: &str) -> Option<&BoxedHandler> {
+    fn get(&self, name: &str) -> Option<&(BoxedHandler,bool)> {
         self.0.get(name)
     }
-    fn insert(&mut self, name: String, handler: BoxedHandler) -> Option<BoxedHandler> {
-        self.0.insert(name, handler)
+    fn insert(&mut self, name: String, handler: BoxedHandler,streaming:bool) -> Option<(BoxedHandler,bool)> {
+        self.0.insert(name, (handler,streaming))
     }
 }
 
@@ -722,7 +722,7 @@ impl<R: Router> ServerBuilder<R> {
     /// ```rust,no_run
     /// async fn handle(params: Params<(i32, String)>, data: Data<HashMap<String, String>>) -> Result<String, Error> { /* ... */ }
     /// ```
-    pub fn with_method<N, S, E, F, T>(mut self, name: N, handler: F) -> Self
+    pub fn with_method<N, S, E, F, T>(mut self, name: N, handler: F,streaming:bool) -> Self
     where
         N: Into<String>,
         F: Factory<S, E, T> + Send + Sync + 'static,
@@ -731,7 +731,7 @@ impl<R: Router> ServerBuilder<R> {
         E: 'static,
         T: FromRequest + Send + 'static,
     {
-        self.router.insert(name.into(), Handler::new(handler).into());
+        self.router.insert(name.into(), Handler::new(handler).into(),streaming);
         self
     }
 
@@ -752,13 +752,15 @@ impl<R: Router> ServerBuilder<R> {
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum ResponseObject {
-    Result { jsonrpc: V2, result: BoxedSerialize, id: Id },
+    Result { jsonrpc: V2, result: BoxedSerialize, id: Id, #[serde(skip_serializing)]streaming:bool },
     Error { jsonrpc: V2, error: Error, id: Id },
 }
 
+
+
 impl ResponseObject {
-    fn result(result: BoxedSerialize, id: Id) -> Self {
-        ResponseObject::Result { jsonrpc: V2, result, id }
+    fn result(result: BoxedSerialize, id: Id,streaming:bool) -> Self {
+        ResponseObject::Result { jsonrpc: V2, result, id,streaming }
     }
 
     fn error(error: Error, id: Id) -> Self {
@@ -808,9 +810,9 @@ impl From<SingleResponseObject> for ResponseObjects {
 }
 
 impl SingleResponseObject {
-    fn result(result: BoxedSerialize, opt_id: Option<Id>) -> Self {
+    fn result(result: BoxedSerialize, opt_id: Option<Id>,streaming:bool) -> Self {
         opt_id
-            .map(|id| SingleResponseObject::One(ResponseObject::result(result, id)))
+            .map(|id| SingleResponseObject::One(ResponseObject::result(result, id,streaming)))
             .unwrap_or_else(|| SingleResponseObject::Empty)
     }
 
@@ -899,7 +901,7 @@ where
     fn handle_request_object(
         &self,
         req: RequestObject,
-    ) -> impl Future<Output = SingleResponseObject> {
+    ) -> impl Future<Output = SingleResponseObject>  {
         let req = RequestObjectWithData { inner: req, data: Arc::clone(&self.data) };
 
         let opt_id = match req.inner.id {
@@ -907,10 +909,11 @@ where
             Some(None) => Some(Id::Null),
             None => None,
         };
-
-        if let Some(method) = self.router.get(req.inner.method.as_ref()) {
-            let out = (&method.0)(req).then(|res| match res {
-                Ok(val) => future::ready(SingleResponseObject::result(val, opt_id)),
+        let method_streaming = self.router.get(req.inner.method.as_ref());
+        let streaming = method_streaming.map(|s|s.1).unwrap_or_default();
+        if let Some((method,_)) = method_streaming {
+            let out = (method.0)(req).then(move |res| match res {
+                Ok(val) => future::ready(SingleResponseObject::result(val, opt_id,streaming)),
                 Err(e) => future::ready(SingleResponseObject::error(e, opt_id)),
             });
             future::Either::Left(out)
