@@ -113,6 +113,7 @@ pub enum Error {
     },
 }
 
+
 impl Error {
     pub const INVALID_REQUEST: Self = Error::Provided { code: -32600, message: "Invalid Request" };
     pub const METHOD_NOT_FOUND: Self =
@@ -126,6 +127,15 @@ impl Error {
             code: -32603,
             message: "Internal Error".into(),
             data: Some(Box::new(e.to_string())),
+        }
+    }
+
+    pub fn message(&self) -> String
+    {
+        match self
+        {
+            Error::Full{message,code,..} =>format!("code : {:},error{:}",message,code),
+            Error::Provided{message,code,..} => format!("code : {:},error{:}",message,code),
         }
     }
 }
