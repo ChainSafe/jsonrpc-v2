@@ -189,7 +189,7 @@ impl<'de> Deserialize<'de> for V2 {
 
 /// Container for the request ID, which can be a string, number, or null.
 /// Not typically used directly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
 #[serde(untagged)]
 pub enum Id {
     Num(i64),
